@@ -90,7 +90,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
 
-            pred_flows = flow_model(features1, features2)
+            pred_flows = flow_model(features1, features2,img1)
             loss, loss_details = criterion(pred_flows, gt_flow, img1)
 
             optimizer.zero_grad()

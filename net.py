@@ -243,12 +243,10 @@ class FlowModel(nn.Module):
         flow_grid = flow_grid.permute(0, 2, 3, 1)
         return F.grid_sample(x, flow_grid, mode="bilinear", padding_mode="border", align_corners=True)
 
-    def forward(self, img1, img2):
+    def forward(self,features1,features2, img1):
         t=self.timer
         """输入为两帧图像 [B, 3, H, W]"""
         t.start()
-        features1 = self.feature_extractor._predict_backend(img1)
-        features2 = self.feature_extractor._predict_backend(img2)
         f1_s3, f1_s2, f1_s1 = features1  # 80x80, 40x40, 20x20
         f2_s3, f2_s2, f2_s1 = features2
         t.next("特征提取")
