@@ -164,7 +164,7 @@ class FlowDataset(Dataset):
 
     def _load_flyingchairs_data(self):
         """加载FlyingChairs数据集（修复文件存在性检查）"""
-        img_dir = os.path.join(self.data_root, "data")
+        img_dir = os.path.join(self.data_root, "FlyingChairs_release/data")
         img1_files = sorted([f for f in os.listdir(img_dir) if f.endswith("_img1.ppm")])
 
         for img1_file in img1_files:

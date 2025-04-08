@@ -7,11 +7,12 @@ from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
 import argparse
+import torch.cuda.amp as amp  # 引入混合精度训练模块
 
 from dataset import FlowDataset
 from net import FlowLoss, FlowModel, YoloBackend
 
-# 光流可视化函数
+# 光流可视化函数（保持不变）
 def flow_to_image(flow):
     """
     将光流张量转换为RGB图像
@@ -29,7 +30,7 @@ def flow_to_image(flow):
     rgb = torch.from_numpy(rgb).permute(0, 3, 1, 2).float()
     return rgb
 
-# 训练函数
+# 优化后的训练函数
 def train(flow_model, feature_extractor, train_loader, val_loader, args):
     """
     训练光流模型
@@ -60,6 +61,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
     best_val_loss = float("inf")
     start_epoch = 0
 
+    # 加载预训练模型或检查点
     if args.pretrain and os.path.exists(args.pretrain):
         flow_model.load_state_dict(torch.load(args.pretrain))
         print("已加载预训练模型")
@@ -76,9 +78,12 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
         best_val_loss = checkpoint['best_val_loss']
         print(f"从第 {start_epoch} 个 epoch 恢复训练")
 
+    # 初始化混合精度训练的 GradScaler
+    scaler = amp.GradScaler()
+
     for epoch in range(start_epoch, args.epochs):
         flow_model.train()
-        train_loss = 0
+        Bradshaw_loss = 0
         train_epe = 0
 
         for i, batch in enumerate(train_loader):
@@ -90,12 +95,15 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
 
-            pred_flows = flow_model(features1, features2,img1)
-            loss, loss_details = criterion(pred_flows, gt_flow, img1)
+            # 使用混合精度训练
+            with amp.autocast():
+                pred_flows = flow_model(features1, features2, img1)
+                loss, loss_details = criterion(pred_flows, gt_flow, img1)
 
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()  # 缩放损失并反向传播
+            scaler.step(optimizer)         # 更新优化器
+            scaler.update()                # 更新 scaler
 
             train_loss += loss.item()
             train_epe += loss_details["epe"].item()
@@ -111,6 +119,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
         writer.add_scalar("Loss/train", avg_train_loss, epoch)
         writer.add_scalar("EPE/train", avg_train_epe, epoch)
 
+        # 验证阶段（减少不必要梯度计算）
         flow_model.eval()
         val_loss = 0
         val_epe = 0
@@ -122,8 +131,9 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
                 gt_flow = batch["flow"].to(device)
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
-                loss, loss_details = criterion(pred_flows, gt_flow, img1)
+                with amp.autocast():  # 验证阶段也使用混合精度
+                    pred_flows = flow_model(features1, features2)
+                    loss, loss_details = criterion(pred_flows, gt_flow, img1)
                 val_loss += loss.item()
                 val_epe += loss_details["epe"].item()
 
@@ -139,18 +149,21 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
 
         scheduler.step()
 
+        # 保存最佳模型
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(
                 flow_model.state_dict(), os.path.join(args.save_dir, "best_model.pth")
             )
 
+        # 定期保存模型
         if (epoch + 1) % args.save_freq == 0:
             torch.save(
                 flow_model.state_dict(),
                 os.path.join(args.save_dir, f"model_epoch_{epoch+1}.pth"),
             )
 
+        # 保存检查点
         checkpoint = {
             'epoch': epoch + 1,
             'model_state_dict': flow_model.state_dict(),
@@ -160,6 +173,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
         }
         torch.save(checkpoint, checkpoint_path)
 
+        # 可视化（保持不变，但可减少频率）
         if epoch % args.vis_freq == 0:
             with torch.no_grad():
                 batch = next(iter(train_loader))
@@ -168,7 +182,8 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
                 gt_flow = batch["flow"].to(device)
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
+                with amp.autocast():
+                    pred_flows = flow_model(features1, features2)
                 pred_flow = pred_flows[0]
                 pred_flow_img = flow_to_image(pred_flow)
                 gt_flow_img = flow_to_image(gt_flow)
@@ -181,7 +196,8 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
                 gt_flow = batch["flow"].to(device)
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
+                with amp.autocast():
+                    pred_flows = flow_model(features1, features2)
                 pred_flow = pred_flows[0]
                 pred_flow_img = flow_to_image(pred_flow)
                 gt_flow_img = flow_to_image(gt_flow)
@@ -191,21 +207,8 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
     torch.save(flow_model.state_dict(), os.path.join(args.save_dir, "final_model.pth"))
     writer.close()
 
-# 数据集划分函数
+# 数据集划分函数（保持不变）
 def split_dataset(dataset, batch_size, num_workers, val_ratio=0.2, random_seed=42):
-    """
-    将数据集分为训练集和验证集
-
-    Args:
-        dataset: 完整数据集
-        batch_size: 批次大小
-        num_workers: 数据加载的 worker 数量
-        val_ratio: 验证集比例
-        random_seed: 随机种子
-
-    Returns:
-        train_loader, val_loader: 训练和验证数据加载器
-    """
     dataset_size = len(dataset)
     indices = list(range(dataset_size))
     np.random.seed(random_seed)
@@ -233,7 +236,6 @@ def split_dataset(dataset, batch_size, num_workers, val_ratio=0.2, random_seed=4
     return train_loader, val_loader
 
 if __name__ == "__main__":
-    # 使用 argparse 定义命令行参数
     parser = argparse.ArgumentParser(description='训练光流模型')
     parser.add_argument('--lr', type=float, default=1e-3, help='初始学习率')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='权重衰减系数')
@@ -252,23 +254,17 @@ if __name__ == "__main__":
     parser.add_argument('--yolo_model_path', type=str, default='FastSAM-s.pt', help='Yolo 模型路径')
     parser.add_argument('--pretrain', type=str, default='', help='预训练模型路径（可选）')
 
-    # 解析命令行参数
     args = parser.parse_args()
 
-    # 创建日志和模型保存目录
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # 初始化模型
     flow_model = FlowModel()
     feature_extractor = YoloBackend(
         model_path=args.yolo_model_path, out_features=[4, 6, 9]
     )
 
-    # 加载数据集并分割
-    # 假设 FlowDataset 需要 root_dir 和 dataset_type 参数
     dataset = FlowDataset(args.data_root, args.dataset_type)
     train_loader, val_loader = split_dataset(dataset, args.batch_size, args.num_workers)
 
-    # 开始训练
     train(flow_model, feature_extractor, train_loader, val_loader, args)
