@@ -12,22 +12,27 @@ import torch.cuda.amp as amp  # 引入混合精度训练模块
 from dataset import FlowDataset
 from net import FlowLoss, FlowModel, YoloBackend
 
-# 光流可视化函数（保持不变）
+import torch
+import numpy as np
+import matplotlib.colors as colors
+
 def flow_to_image(flow):
     """
     将光流张量转换为RGB图像
-    :param flow: [B, 2, H, W]
-    :return: [B, 3, H, W]
+    :param flow: [B, 2, H, W] 的张量，表示光流
+    :return: [B, 3, H, W] 的张量，表示RGB图像
     """
-    u = flow[:, 0, :, :]
-    v = flow[:, 1, :, :]
-    max_flow = torch.sqrt(u**2 + v**2).max()
-    angle = torch.atan2(v, u)
-    angle = (angle + np.pi) / (2 * np.pi)  # 归一化到[0,1]
-    magnitude = torch.sqrt(u**2 + v**2) / max_flow
-    hsv = torch.stack([angle, torch.ones_like(angle), magnitude], dim=1)
-    rgb = plt.cm.hsv(hsv.cpu().numpy())
-    rgb = torch.from_numpy(rgb).permute(0, 3, 1, 2).float()
+    u = flow[:, 0, :, :]  # 提取 u 分量 [B, H, W]
+    v = flow[:, 1, :, :]  # 提取 v 分量 [B, H, W]
+    max_flow = torch.sqrt(u**2 + v**2).max()  # 计算最大流量幅度
+    angle = torch.atan2(v, u)  # 计算角度（弧度）
+    angle = (angle + np.pi) / (2 * np.pi)  # 归一化到 [0, 1]
+    magnitude = torch.sqrt(u**2 + v**2) / max_flow  # 归一化幅度
+    hsv = torch.stack([angle, torch.ones_like(angle), magnitude], dim=1)  # [B, 3, H, W]
+    hsv_permuted = hsv.permute(0, 2, 3, 1)  # 调整为 [B, H, W, 3]
+    hsv_np = hsv_permuted.cpu().detach().numpy()  # 转换为 NumPy 数组
+    rgb_np = colors.hsv_to_rgb(hsv_np)  # 将 HSV 转换为 RGB，输出 [B, H, W, 3]
+    rgb = torch.from_numpy(rgb_np).permute(0, 3, 1, 2).float()  # 调整为 [B, 3, H, W]
     return rgb
 
 # 优化后的训练函数
@@ -63,7 +68,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
 
     # 加载预训练模型或检查点
     if args.pretrain and os.path.exists(args.pretrain):
-        flow_model.load_state_dict(torch.load(args.pretrain))
+        flow_model.load_state_dict(torch.load(args.pretrain)['model_state_dict'])
         print("已加载预训练模型")
     else:
         print("未指定预训练模型或路径不存在，使用随机初始化")
@@ -85,7 +90,7 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
         flow_model.train()
         Bradshaw_loss = 0
         train_epe = 0
-
+        train_loss = 0
         for i, batch in enumerate(train_loader):
             img1 = batch["img1"].to(device)
             img2 = batch["img2"].to(device)
@@ -107,7 +112,6 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
 
             train_loss += loss.item()
             train_epe += loss_details["epe"].item()
-
             if i % args.print_freq == 0:
                 print(
                     f"Epoch [{epoch+1}/{args.epochs}], Step [{i+1}/{len(train_loader)}], "
@@ -125,14 +129,15 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
         val_epe = 0
 
         with torch.no_grad():
-            for batch in val_loader:
+            
+            for i,batch in enumerate(val_loader):
                 img1 = batch["img1"].to(device)
                 img2 = batch["img2"].to(device)
                 gt_flow = batch["flow"].to(device)
                 features1 = feature_extractor._predict_backend(img1)
                 features2 = feature_extractor._predict_backend(img2)
                 with amp.autocast():  # 验证阶段也使用混合精度
-                    pred_flows = flow_model(features1, features2)
+                    pred_flows = flow_model(features1, features2,img1)
                     loss, loss_details = criterion(pred_flows, gt_flow, img1)
                 val_loss += loss.item()
                 val_epe += loss_details["epe"].item()
@@ -172,37 +177,6 @@ def train(flow_model, feature_extractor, train_loader, val_loader, args):
             'best_val_loss': best_val_loss,
         }
         torch.save(checkpoint, checkpoint_path)
-
-        # 可视化（保持不变，但可减少频率）
-        if epoch % args.vis_freq == 0:
-            with torch.no_grad():
-                batch = next(iter(train_loader))
-                img1 = batch["img1"].to(device)
-                img2 = batch["img2"].to(device)
-                gt_flow = batch["flow"].to(device)
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
-                with amp.autocast():
-                    pred_flows = flow_model(features1, features2)
-                pred_flow = pred_flows[0]
-                pred_flow_img = flow_to_image(pred_flow)
-                gt_flow_img = flow_to_image(gt_flow)
-                writer.add_image("Train/Pred_Flow", make_grid(pred_flow_img), epoch)
-                writer.add_image("Train/GT_Flow", make_grid(gt_flow_img), epoch)
-
-                batch = next(iter(val_loader))
-                img1 = batch["img1"].to(device)
-                img2 = batch["img2"].to(device)
-                gt_flow = batch["flow"].to(device)
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
-                with amp.autocast():
-                    pred_flows = flow_model(features1, features2)
-                pred_flow = pred_flows[0]
-                pred_flow_img = flow_to_image(pred_flow)
-                gt_flow_img = flow_to_image(gt_flow)
-                writer.add_image("Val/Pred_Flow", make_grid(pred_flow_img), epoch)
-                writer.add_image("Val/GT_Flow", make_grid(gt_flow_img), epoch)
 
     torch.save(flow_model.state_dict(), os.path.join(args.save_dir, "final_model.pth"))
     writer.close()
