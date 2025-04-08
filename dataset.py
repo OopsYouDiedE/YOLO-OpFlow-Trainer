@@ -1,304 +1,277 @@
 import os
+from torch.utils.data import Dataset
+import cv2
 import numpy as np
-import torch
-from torch.optim import Adam
-from torch.utils.data import DataLoader, SubsetRandomSampler
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
+import os
+import cv2
+import numpy as np
+import requests
+from tqdm import tqdm
+import zipfile
 
-from dataset import FlowDataset
-from net import FlowLoss, FlowModel, YoloBackend
 
-#光流可视化函数
-def flow_to_image(flow):
+class FlowDataset(Dataset):
     """
-    将光流张量转换为RGB图像
-    :param flow: [B, 2, H, W]
-    :return: [B, 3, H, W]
+    光流数据集加载器，支持Sintel和FlyingChairs数据集，支持自动下载
     """
-    u = flow[:, 0, :, :]
-    v = flow[:, 1, :, :]
-    max_flow = torch.sqrt(u**2 + v**2).max()
-    angle = torch.atan2(v, u)
-    angle = (angle + np.pi) / (2 * np.pi)  # 归一化到[0,1]
-    magnitude = torch.sqrt(u**2 + v**2) / max_flow
-    hsv = torch.stack([angle, torch.ones_like(angle), magnitude], dim=1)
-    rgb = plt.cm.hsv(hsv.cpu().numpy())
-    rgb = torch.from_numpy(rgb).permute(0, 3, 1, 2).float()
-    return rgb
 
+    def __init__(self, data_root, dataset_type="sintel", split="train", augment=True):
+        if dataset_type == "sintel":
+            self.data_root = os.path.join(data_root, "Sintel")
+        elif dataset_type == "flyingchairs":
+            self.data_root = os.path.join(data_root, "FlyingChairs")
+        else:
+            raise ValueError(f"不支持的数据集类型: {dataset_type}")
+        self.split = split
+        self.augment = augment
+        self.samples = []
 
-# 训练函数
-def train(flow_model, feature_extractor, train_loader, val_loader, args):
-    """
-    训练光流模型
+        # 创建数据根目录（如果不存在）
+        os.makedirs(self.data_root, exist_ok=True)
 
-    Args:
-        flow_model (FlowModel): 光流模型
-        feature_extractor (YoloBackend): 特征提取模型
-        train_loader (DataLoader): 训练数据加载器
-        val_loader (DataLoader): 验证数据加载器
-        args: 训练参数
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    flow_model.to(device)
-    feature_extractor.to(device)
+        # 自动下载缺失的数据集
+        if dataset_type == "sintel":
+            if not self._check_sintel_exists():
+                print("检测到Sintel数据集缺失，开始自动下载...")
+                self._download_sintel()
+        elif dataset_type == "flyingchairs":
+            if not self._check_flyingchairs_exists():
+                print("检测到FlyingChairs数据集缺失，开始自动下载...")
+                self._download_flyingchairs()
 
-    # 将特征提取器设置为评估模式，我们不训练它
-    feature_extractor.eval()
+        # 加载数据集
+        if dataset_type == "sintel":
+            self._load_sintel_data()
+        elif dataset_type == "flyingchairs":
+            self._load_flyingchairs_data()
 
-    # 优化器，使用较大的初始学习率
-    optimizer = Adam(
-        filter(lambda p: p.requires_grad, flow_model.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
+        print(f"已加载 {dataset_type} 数据集，共 {len(self.samples)} 对样本")
 
-    # 学习率调度器
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=args.lr_step, gamma=args.lr_gamma
-    )
+    def _check_sintel_exists(self):
+        """检查Sintel数据集完整性"""
+        required = ["training/clean", "training/final", "training/flow"]
+        return all(os.path.exists(os.path.join(self.data_root, p)) for p in required)
 
-    # TensorBoard
-    writer = SummaryWriter(args.log_dir)
+    def _check_flyingchairs_exists(self):
+        """检查FlyingChairs数据集完整性"""
+        data_dir = os.path.join(self.data_root, "data")
+        if not os.path.exists(data_dir):
+            return False
+        # 随机检查10个样本
+        img1_files = [f for f in os.listdir(data_dir) if f.endswith("_img1.ppm")][:10]
+        if not img1_files:
+            return False
+        for f in img1_files:
+            base = f[:-9]
+            if not all(
+                os.path.exists(os.path.join(data_dir, f"{base}{suffix}"))
+                for suffix in ["_img2.ppm", "_flow.flo"]
+            ):
+                return False
+        return True
 
-    # 初始化损失函数
-    criterion = FlowLoss().to(device)
+    def _download_sintel(self):
+        """下载并解压Sintel数据集"""
+        url = "http://files.is.tue.mpg.de/sintel/MPI-Sintel-complete.zip"
+        zip_path = os.path.join(self.data_root, "Sintel.zip")
+        self._download_file(url, zip_path)
 
-    # 训练循环
-    best_val_loss = float("inf")
-    start_epoch = 0
+        # 解压文件
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(self.data_root)
 
-    # 加载预训练模型（如果提供）
-    if os.path.exists(args.pretrain):
-        flow_model.load_state_dict(torch.load(args.pretrain))
-        print("Loaded pretrain model")
-    else:
-        print("预训练模型不存在，使用随机初始化")
+        os.remove(zip_path)
 
-    # 加载checkpoint（如果存在）
-    checkpoint_path = os.path.join(args.save_dir, 'checkpoint.pth')
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        flow_model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch']
-        best_val_loss = checkpoint['best_val_loss']
-        print(f"Resuming training from epoch {start_epoch}")
+    def _download_flyingchairs(self):
+        """下载并解压FlyingChairs数据集"""
+        url = (
+            "https://lmb.informatik.uni-freiburg.de/data/FlyingChairs/FlyingChairs.zip"
+        )
+        zip_path = os.path.join(self.data_root, "FlyingChairs.zip")
+        self._download_file(url, zip_path)
 
-    for epoch in range(start_epoch, args.epochs):
-        # 训练
-        flow_model.train()
-        train_loss = 0
-        train_epe = 0
+        # 解压文件
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(self.data_root)
 
-        for i, batch in enumerate(train_loader):
-            # 获取图像
-            img1 = batch["img1"].to(device)  # 形状应为 [B,3,640,640]
-            img2 = batch["img2"].to(device)  # 形状应为 [B,3,640,640]
-            gt_flow = batch["flow"].to(device)  # 形状应为 [B,2,640,640]
+        os.remove(zip_path)
 
-            # 使用特征提取器提取特征
-            with torch.no_grad():
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
+    def _download_file(self, url, save_path):
+        """带进度条的文件下载函数"""
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
 
-            # 前向传播 - 光流模型
-            pred_flows = flow_model(features1, features2)
-
-            # 计算损失
-            loss, loss_details = criterion(pred_flows, gt_flow, img1)
-
-            # 反向传播和优化
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item()
-            train_epe += loss_details["epe"].item()
-
-            # 打印进度
-            if i % args.print_freq == 0:
-                print(
-                    f"Epoch [{epoch+1}/{args.epochs}], Step [{i+1}/{len(train_loader)}], "
-                    f"Loss: {loss.item():.4f}, EPE: {loss_details['epe'].item():.4f}"
-                )
-
-        avg_train_loss = train_loss / len(train_loader)
-        avg_train_epe = train_epe / len(train_loader)
-        writer.add_scalar("Loss/train", avg_train_loss, epoch)
-        writer.add_scalar("EPE/train", avg_train_epe, epoch)
-
-        # 验证
-        flow_model.eval()
-        val_loss = 0
-        val_epe = 0
-
-        with torch.no_grad():
-            for batch in val_loader:
-                img1 = batch["img1"].to(device)
-                img2 = batch["img2"].to(device)
-                gt_flow = batch["flow"].to(device)
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
-                loss, loss_details = criterion(pred_flows, gt_flow, img1)
-                val_loss += loss.item()
-                val_epe += loss_details["epe"].item()
-
-        avg_val_loss = val_loss / len(val_loader)
-        avg_val_epe = val_epe / len(val_loader)
-        writer.add_scalar("Loss/val", avg_val_loss, epoch)
-        writer.add_scalar("EPE/val", avg_val_epe, epoch)
-
-        print(
-            f"Epoch [{epoch+1}/{args.epochs}], Train Loss: {avg_train_loss:.4f}, Train EPE: {avg_train_epe:.4f}, "
-            f"Val Loss: {avg_val_loss:.4f}, Val EPE: {avg_val_epe:.4f}"
+        total_size = int(response.headers.get("content-length", 0))
+        progress_bar = tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            desc=f"下载 {os.path.basename(save_path)}",
         )
 
-        # 更新学习率
-        scheduler.step()
+        with open(save_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    progress_bar.update(len(chunk))
+        progress_bar.close()
 
-        # 保存最佳模型
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            torch.save(
-                flow_model.state_dict(), os.path.join(args.save_dir, "best_model.pth")
+    def _load_sintel_data(self):
+        """加载Sintel数据集"""
+        # Sintel数据集目录结构：
+        # - training
+        #   - clean/final (两种渲染风格)
+        #   - flow
+        base_dir = os.path.join(self.data_root, "training")
+
+        # 选择clean或final渲染风格
+        styles = ["clean", "final"]
+
+        for style in styles:
+            img_dir = os.path.join(base_dir, style)
+            flow_dir = os.path.join(base_dir, "flow")
+
+            # 遍历所有场景
+            for scene in sorted(os.listdir(img_dir)):
+                scene_img_dir = os.path.join(img_dir, scene)
+                scene_flow_dir = os.path.join(flow_dir, scene)
+
+                if not os.path.isdir(scene_img_dir):
+                    continue
+
+                # 获取所有图像并排序
+                images = sorted(
+                    [f for f in os.listdir(scene_img_dir) if f.endswith(".png")]
+                )
+
+                # 对于每对连续帧
+                for i in range(len(images) - 1):
+                    img1_path = os.path.join(scene_img_dir, images[i])
+                    img2_path = os.path.join(scene_img_dir, images[i + 1])
+                    flow_path = os.path.join(scene_flow_dir, f"frame_{i:04d}.flo")
+                    if not os.path.exists(flow_path):
+                        print(f"警告: 光流文件 {flow_path} 不存在，跳过该样本")
+                        continue
+                    if os.path.exists(flow_path):
+                        self.samples.append(
+                            {
+                                "img1_path": img1_path,
+                                "img2_path": img2_path,
+                                "flow_path": flow_path,
+                                "style": style,
+                            }
+                        )
+
+    def _load_flyingchairs_data(self):
+        """加载FlyingChairs数据集（修复文件存在性检查）"""
+        img_dir = os.path.join(self.data_root, "data")
+        img1_files = sorted([f for f in os.listdir(img_dir) if f.endswith("_img1.ppm")])
+
+        for img1_file in img1_files:
+            base_name = img1_file[:-9]
+            img2_file = f"{base_name}_img2.ppm"
+            flow_file = f"{base_name}_flow.flo"
+
+            img1_path = os.path.join(img_dir, img1_file)
+            img2_path = os.path.join(img_dir, img2_file)
+            flow_path = os.path.join(img_dir, flow_file)
+
+            # 修复逻辑：两个文件必须同时存在
+            if not (os.path.exists(img2_path) and os.path.exists(flow_path)):
+                print(f"警告: 缺失文件 {img2_path} 或 {flow_path}，跳过该样本")
+                continue
+
+            self.samples.append(
+                {"img1_path": img1_path, "img2_path": img2_path, "flow_path": flow_path}
             )
 
-        # 定期保存检查点
-        if (epoch + 1) % args.save_freq == 0:
-            torch.save(
-                flow_model.state_dict(),
-                os.path.join(args.save_dir, f"model_epoch_{epoch+1}.pth"),
-            )
+    def _read_flow(self, flow_path):
+        """读取光流文件(.flo格式)"""
+        with open(flow_path, "rb") as f:
+            header = np.fromfile(f, np.float32, count=1)
+            if header != 202021.25:
+                raise Exception("无效的光流文件格式")
 
-        # 保存checkpoint
-        checkpoint = {
-            'epoch': epoch + 1,
-            'model_state_dict': flow_model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'best_val_loss': best_val_loss,
-        }
-        torch.save(checkpoint, checkpoint_path)
+            width = np.fromfile(f, np.int32, count=1)[0]
+            height = np.fromfile(f, np.int32, count=1)[0]
 
-        # 可视化光流
-        if epoch % args.vis_freq == 0:
-            with torch.no_grad():
-                # 训练集样本
-                batch = next(iter(train_loader))
-                img1 = batch["img1"].to(device)
-                img2 = batch["img2"].to(device)
-                gt_flow = batch["flow"].to(device)
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
-                pred_flow = pred_flows[0]  # 假设pred_flows是多尺度列表，取最大尺度
-                pred_flow_img = flow_to_image(pred_flow)
-                gt_flow_img = flow_to_image(gt_flow)
-                writer.add_image("Train/Pred_Flow", make_grid(pred_flow_img), epoch)
-                writer.add_image("Train/GT_Flow", make_grid(gt_flow_img), epoch)
+            flow = np.fromfile(f, np.float32, count=width * height * 2)
+            flow = flow.reshape((height, width, 2))
 
-                # 验证集样本
-                batch = next(iter(val_loader))
-                img1 = batch["img1"].to(device)
-                img2 = batch["img2"].to(device)
-                gt_flow = batch["flow"].to(device)
-                features1 = feature_extractor._predict_backend(img1)
-                features2 = feature_extractor._predict_backend(img2)
-                pred_flows = flow_model(features1, features2)
-                pred_flow = pred_flows[0]
-                pred_flow_img = flow_to_image(pred_flow)
-                gt_flow_img = flow_to_image(gt_flow)
-                writer.add_image("Val/Pred_Flow", make_grid(pred_flow_img), epoch)
-                writer.add_image("Val/GT_Flow", make_grid(gt_flow_img), epoch)
+        return flow
 
-    # 保存最终模型
-    torch.save(flow_model.state_dict(), os.path.join(args.save_dir, "final_model.pth"))
-    writer.close()
+    def _preprocess_image(self, img_path):
+        """预处理图像"""
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # 中央裁剪到最近的32的倍数长宽
+        h, w = img.shape[:2]
+        crop_h = (h // 32) * 32  # 计算最近的32的倍数
+        crop_w = (w // 32) * 32
 
-# 划分训练集和验证集 (8:2)
-def split_dataset(dataset, val_ratio=0.2, random_seed=42):
-    """
-    将数据集分为训练集和验证集
+        # 计算裁剪区域
+        y0 = (h - crop_h) // 2
+        x0 = (w - crop_w) // 2
+        img = img[y0 : y0 + crop_h, x0 : x0 + crop_w]
 
-    Args:
-        dataset: 完整数据集
-        val_ratio: 验证集比例
-        random_seed: 随机种子
+        # 转换为CHW格式并标准化
+        img = img.transpose(2, 0, 1).astype(np.float32) / 255.0
 
-    Returns:
-        train_loader, val_loader: 训练和验证数据加载器
-    """
-    dataset_size = len(dataset)
-    indices = list(range(dataset_size))
-    np.random.seed(random_seed)
-    np.random.shuffle(indices)
-    split = int(np.floor(val_ratio * dataset_size))
-    train_indices, val_indices = indices[split:], indices[:split]
+        return img
 
-    train_sampler = SubsetRandomSampler(train_indices)
-    val_sampler = SubsetRandomSampler(val_indices)
+    def _augment_data(self, img1, img2, flow):
+        """数据增强"""
+        # 随机裁剪，先禁用，感觉意义不明
+        """h, w = flow.shape[1:3]
+        crop_h, crop_w = 448, 448  # 裁剪尺寸
 
-    train_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=val_sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-    return train_loader, val_loader
+        if h > crop_h and w > crop_w:
+            y0 = np.random.randint(0, h - crop_h)
+            x0 = np.random.randint(0, w - crop_w)
 
+            img1 = img1[:, y0:y0+crop_h, x0:x0+crop_w]
+            img2 = img2[:, y0:y0+crop_h, x0:x0+crop_w]
+            flow = flow[:, y0:y0+crop_h, x0:x0+crop_w]"""
 
-if __name__ == "__main__":
-    # 参数设置
-    class Args:
-        def __init__(self):
-            self.lr = 1e-3  # 较大的初始学习率
-            self.weight_decay = 1e-4
-            self.lr_step = 10
-            self.lr_gamma = 0.5
-            self.epochs = 50
-            self.print_freq = 20
-            self.save_freq = 5
-            self.vis_freq = 1  # 每隔多少个epoch可视化一次
-            self.log_dir = "logs/flow"
-            self.save_dir = "checkpoints/flow"
-            self.data_root ="./"
-            self.dataset_type='sintel'
-            self.batch_size = 8
-            self.num_workers = 4
-            self.yolo_model_path = "FastSAM-s.pt"  # YoloBackend 模型路径
-            self.pretrain = ""  # 预训练模型路径（可选）
+        # 随机水平翻转
+        if np.random.rand() > 0.5:
+            img1 = np.flip(img1, axis=2).copy()
+            img2 = np.flip(img2, axis=2).copy()
+            flow = np.flip(flow, axis=2).copy()
+            flow[0, :, :] *= -1  # 翻转x方向光流
 
-    args = Args()
+        # 随机垂直翻转
+        if np.random.rand() > 0.5:
+            img1 = np.flip(img1, axis=1).copy()
+            img2 = np.flip(img2, axis=1).copy()
+            flow = np.flip(flow, axis=1).copy()
+            flow[1, :, :] *= -1  # 翻转y方向光流
 
-    # 创建目录
-    os.makedirs(args.log_dir, exist_ok=True)
-    os.makedirs(args.save_dir, exist_ok=True)
+        return img1, img2, flow
 
-    # 初始化模型
-    flow_model = FlowModel()
+    def __len__(self):
+        return len(self.samples)
 
-    # 初始化特征提取器 - 使用 YoloBackend
-    feature_extractor = YoloBackend(
-        model_path=args.yolo_model_path, out_features=[4, 6, 9]
-    )
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
 
-    # 加载数据集并分割
-    dataset = FlowDataset()  # 假设数据集已经编写好
-    train_loader, val_loader = split_dataset(dataset)
+        # 读取图像
+        img1 = self._preprocess_image(sample["img1_path"])
+        img2 = self._preprocess_image(sample["img2_path"])
 
-    # 训练模型
-    train(flow_model, feature_extractor, train_loader, val_loader, args)
+        # 读取光流
+        flow = self._read_flow(sample["flow_path"])
+        # 转换为CHW格式
+        flow = flow.transpose(2, 0, 1).astype(np.float32)
+
+        # 中央裁剪到最近的32的倍数长宽（与图像裁剪方式一致）
+        h, w = flow.shape[1:3]
+        crop_h = (h // 32) * 32
+        crop_w = (w // 32) * 32
+
+        y0 = (h - crop_h) // 2
+        x0 = (w - crop_w) // 2
+        flow = flow[:, y0 : y0 + crop_h, x0 : x0 + crop_w]
+
+        return {"img1": img1, "img2": img2, "flow": flow}
