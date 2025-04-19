@@ -26,12 +26,12 @@ from ultralytics.nn.modules.head import Segment,Detect
 
 class YoloBasedDetFlowUnionModel(FastSAM):
     def __init__(self,model_path,):
-        super().__init__()
         model=YOLO(model_path)
-        
         self.model = model
         self.original_model = model.model
+        print(self.original_model)
         self.retina_masks = True  # 是否使用 RetinaNet 的掩码处理方式
+        super().__init__()
         # 2. 获取原始 Detect head
         old_head = self.original_model.model[-1]
         assert isinstance(old_head, Segment), "最后一个模块不是 Segment，请确认模型是 YOLO-Seg 类型。"
@@ -194,7 +194,7 @@ def train(model: YoloBasedDetFlowUnionModel,
 
 if __name__ == "__main__":
     # 配置区
-    data_root = "/path/to/data"
+    data_root = "./"
     batch_size = 4
     lr = 1e-4
     epochs = 20
