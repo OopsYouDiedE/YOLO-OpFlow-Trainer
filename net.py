@@ -200,7 +200,7 @@ if __name__ == "__main__":
     epochs = 20
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = YoloBasedDetFlowUnionModel("yolov8-seg.pt")
+    model = YoloBasedDetFlowUnionModel("FastSAM-s.pt")
     dataset = FlowDataset(data_root, dataset_type="sintel", split="train")
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
