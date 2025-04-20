@@ -138,7 +138,9 @@ def compute_flow_loss(dets: torch.Tensor,
     pred_flows: Tensor, shape=[B, N, 2]，模型预测的 (vx, vy)
     gt_flow:    Tensor, shape=[B, 2, H, W]，真实光流图
     """
+
     B, N, _ = dets.shape
+    print
     _, C, H, W = gt_flow.shape
 
     # 提取 (x, y) 像素坐标
@@ -177,7 +179,8 @@ def train(model: YoloBasedDetFlowUnionModel,
             # 前向第二帧用于缓存特征
             model.model(img2)
             # 前向第一帧得到输出
-            dets = model.model(img1)
+            res = model.model(img1)
+            dets=res[0][0]
             pred_flows = model.head.flow_cache  # 获取光流分支的输出
             # 假设 outputs 返回 (dets, pred_flows)
 
