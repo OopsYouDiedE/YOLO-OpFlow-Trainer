@@ -186,9 +186,10 @@ def train(model: YoloBasedDetFlowUnionModel,
                 if isinstance(x,torch.Tensor):
                     return x.shape
                 return [o(xi) for xi in x]
-            print("**************Det结构***************")
+            print(o(res))
+            print("**************Det结构***************",dets.shape)
             print(dets)
-            print("**************gt_flow结构***********")
+            print("**************gt_flow结构***********",gt_flow.shape)
             print(gt_flow)
             pred_flows = model.head.flow_cache  # 获取光流分支的输出
             # 假设 outputs 返回 (dets, pred_flows)
