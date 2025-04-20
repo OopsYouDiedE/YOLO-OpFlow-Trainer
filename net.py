@@ -175,9 +175,9 @@ def train(model: YoloBasedDetFlowUnionModel,
             model.head.reset_cache()  # 重置缓存
             optimizer.zero_grad()
             # 前向第二帧用于缓存特征
-            model.original_model(img2)
+            model.model(img2)
             # 前向第一帧得到输出
-            dets = model.original_model(img1)
+            dets = model.model(img1)
             pred_flows = model.head.flow_cache  # 获取光流分支的输出
             # 假设 outputs 返回 (dets, pred_flows)
 
