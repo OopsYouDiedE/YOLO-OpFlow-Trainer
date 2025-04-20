@@ -34,7 +34,7 @@ class YoloBasedDetFlowUnionModel(FastSAM):
         assert isinstance(old_head, Segment), "最后一个模块不是 Segment，请确认模型是 YOLO-Seg 类型。"
 
 
-        new_head = DetectFlowUnionHead(1, (128,256,512))
+        new_head = DetectFlowUnionHead(1, (320,321,322))
         old_head=self.model.model[-1]
         new_head.f=old_head.f
         new_head.i=old_head.i
