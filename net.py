@@ -30,7 +30,6 @@ class YoloBasedDetFlowUnionModel(FastSAM):
         model=YOLO(model_path)
         self.model = model
         self.original_model = model.model
-        print(self.original_model)
         self.retina_masks = True  # 是否使用 RetinaNet 的掩码处理方式
         # 2. 获取原始 Detect head
         old_head = model.model.model[-1]
