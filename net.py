@@ -181,6 +181,7 @@ def train(model: YoloBasedDetFlowUnionModel,
             # 前向第一帧得到输出
             res = model.model(img1)
             dets=res[0][0]
+            print(dets.shape)
             pred_flows = model.head.flow_cache  # 获取光流分支的输出
             # 假设 outputs 返回 (dets, pred_flows)
 
