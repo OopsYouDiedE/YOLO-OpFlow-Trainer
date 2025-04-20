@@ -27,9 +27,6 @@ from ultralytics.nn.modules.head import Segment,Detect
 class YoloBasedDetFlowUnionModel(FastSAM):
     def __init__(self,model_path,):
         super().__init__()
-        model=YOLO(model_path)
-        self.model = model
-        self.original_model = model.model
         self.retina_masks = True  # 是否使用 RetinaNet 的掩码处理方式
         # 2. 获取原始 Detect head
         old_head = model.model.model[-1]
@@ -165,7 +162,7 @@ def train(model: YoloBasedDetFlowUnionModel,
           device: torch.device,
           epochs: int = 10):
     model.to(device)
-    model.train()  # 冻结非光流分支，训练光流分支
+    model.model.train()  # 冻结非光流分支，训练光流分支
 
     for epoch in range(1, epochs + 1):
         total_loss = 0.0
