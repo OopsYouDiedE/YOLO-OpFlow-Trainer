@@ -26,24 +26,24 @@ from ultralytics.nn.modules.head import Segment,Detect
 
 class YoloBasedDetFlowUnionModel(FastSAM):
     def __init__(self,model_path,):
+        super().__init__()
         model=YOLO(model_path)
         self.model = model
         self.original_model = model.model
         print(self.original_model)
         self.retina_masks = True  # 是否使用 RetinaNet 的掩码处理方式
-        super().__init__()
         # 2. 获取原始 Detect head
-        old_head = self.original_model.model[-1]
+        old_head = model.model.model[-1]
         assert isinstance(old_head, Segment), "最后一个模块不是 Segment，请确认模型是 YOLO-Seg 类型。"
 
 
         new_head = DetectFlowUnionHead(1, (128,256,512))
-        old_head=self.original_model.model[-1]
+        old_head=model.model.model[-1]
         new_head.f=old_head.f
         new_head.i=old_head.i
         new_head.stride=old_head.stride
         print("old_head.stride",old_head.stride)
-        self.original_model.model[-1] = new_head  # 替换为新 head
+        model.model.model[-1] = new_head  # 替换为新 head
 
         # 4. 加载原始 Detect head 中的可兼容权重
         self.load_matching_weights(new_head, old_head)
