@@ -166,6 +166,7 @@ def train(model: YoloBasedDetFlowUnionModel,
           device: torch.device,
           epochs: int = 10):
     model.to(device)
+    model.val()
     #model.model.train()  # 冻结非光流分支，训练光流分支
 
     for epoch in range(1, epochs + 1):
