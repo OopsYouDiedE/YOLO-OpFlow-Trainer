@@ -78,6 +78,7 @@ class DetectFlowUnionHead(Segment):
 
 
     def __init__(self, nc=1, ch=()):
+        self.nl=len(ch)
         self.vxy_pram=1/4
         self.legacy=True #因为是使用FastSam的v8模型
         self.result_cache=[None] * self.nl
