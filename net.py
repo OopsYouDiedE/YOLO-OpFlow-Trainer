@@ -166,7 +166,7 @@ def train(model: YoloBasedDetFlowUnionModel,
           device: torch.device,
           epochs: int = 10):
     model.to(device)
-    model.model.train()  # 冻结非光流分支，训练光流分支
+    #model.model.train()  # 冻结非光流分支，训练光流分支
 
     for epoch in range(1, epochs + 1):
         total_loss = 0.0
@@ -181,7 +181,11 @@ def train(model: YoloBasedDetFlowUnionModel,
             # 前向第一帧得到输出
             res = model.model(img1)
             dets=res[0][0]
-            print(dets.shape)
+            def o(x):
+                if isinstance(x,torch.Tensor):
+                    return x.shape
+                return [o(xi) for xi in x]
+            print(o(res))
             pred_flows = model.head.flow_cache  # 获取光流分支的输出
             # 假设 outputs 返回 (dets, pred_flows)
 
