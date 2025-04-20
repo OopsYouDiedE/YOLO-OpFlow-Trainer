@@ -48,6 +48,7 @@ class YoloBasedDetFlowUnionModel(FastSAM):
         # 5. 冻结非光流分支参数
         self.freeze_non_flow_parts(new_head)
         self.head=new_head
+        self.model.head = new_head         # ——> 同步到底层 FastSAM.model
         
     def load_matching_weights(self, new_head, old_head):
         """尝试从旧的 head 中加载匹配的参数到新 head 中"""
