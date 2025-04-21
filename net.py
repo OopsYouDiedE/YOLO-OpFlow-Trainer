@@ -97,6 +97,7 @@ class DetectFlowUnionHead(Segment):
         
     def forward(self, x):
         if self.flow_cache[0] !=None:
+            cache=self.flow_cache
             for i in range(self.nl):
                 merge=torch.cat((x[i],cache[i]),1)
                 flow_feat = self.cv_flow[i](merge)
