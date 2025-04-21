@@ -179,7 +179,6 @@ def train(model: YoloBasedDetFlowUnionModel,
                 if isinstance(x,torch.Tensor):
                     return x.shape
                 return [o(xi) for xi in x]
-            print(o(res))
             print("**************Det结构***************",dets.shape)
             print(dets)
             print("**************gt_flow结构***********",gt_flow.shape)
