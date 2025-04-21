@@ -173,6 +173,7 @@ def train(model: YoloBasedDetFlowUnionModel,
             # 前向第一帧得到输出
             res = model(img1)
             dets=res[0]
+            print(dets)
             def o(x):
                 if isinstance(x,torch.Tensor):
                     return x.shape
