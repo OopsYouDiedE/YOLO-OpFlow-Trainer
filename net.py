@@ -96,24 +96,14 @@ class DetectFlowUnionHead(Segment):
 
         
     def forward(self, x):
-        if self.flow_cache[0] ==None:
-            self.set_cache(x)
-            if self.training:
-                return None
-        p = self.proto(x[0])  # mask protos
-        bs = p.shape[0]  # batch size
-        mc = torch.cat([self.cv4[i](x[i]).view(bs, self.nm, -1) for i in range(self.nl)], 2)  # mask coefficients
-
-        """Concatenates and returns predicted bounding boxes and class probabilities."""
+        if self.flow_cache[0] !=None:
+            for i in range(self.nl):
+                flow_feat = self.cv_flow[i](merge)
+                self.result_cache[i]=flow_feat
         cache=self.flow_cache
         self.set_cache(x)
 
-        for i in range(self.nl):
-            det_feat = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-            
-            merge=torch.cat((x[i],cache[i]),1)
-            flow_feat = self.cv_flow[i](merge)
-            self.result_cache[i]=flow_feat
+        
         
         return super().forward(x)
 
@@ -178,9 +168,9 @@ def train(model: YoloBasedDetFlowUnionModel,
             model.head.reset_cache()  # 重置缓存
             optimizer.zero_grad()
             # 前向第二帧用于缓存特征
-            model.model(img2)
+            model(img2)
             # 前向第一帧得到输出
-            res = model.model(img1)
+            res = model(img1)
             dets=res[0]
             def o(x):
                 if isinstance(x,torch.Tensor):
